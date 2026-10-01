@@ -4,6 +4,7 @@ full pipeline is covered by the end-to-end run described in .github/CONTRIBUTING
 
 import asyncio
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -55,9 +56,19 @@ def test_unknown_report_is_404(client):
 
 
 def test_health(client):
+    from app.engine_status import mark_failed, mark_loaded, reset_status
+
+    reset_status()
+    mark_loaded("perplexity")
+    mark_loaded("classifier_tmr")
+    mark_failed("classifier_superannotate", "test failure")
+
     r = client.get("/health")
+
     assert r.status_code == 200
-    assert r.json()["engines"] == 23
+    assert r.json()["engines"]["total"] == 23
+    assert r.json()["engines"]["loaded"] == 2
+    assert r.json()["engines"]["failed"] == ["classifier_superannotate"]
 
 
 def test_site_scan_requires_url(client):
@@ -83,3 +94,17 @@ def test_extract_endpoint(client):
         files={"file": ("x.exe", b"MZ" * 50, "application/octet-stream")},
     )
     assert r.status_code == 400
+
+
+@pytest.mark.parametrize("path", ["/api/analyze", "/api/web/analyze"])
+def test_unreachable_url_is_a_502_not_a_crash(client, monkeypatch, path):
+    async def times_out(url):
+        raise httpx.ConnectTimeout("timed out")
+
+    monkeypatch.setattr(
+        f"app.routes.{'web' if 'web' in path else 'api'}.extract_text_from_url",
+        times_out,
+    )
+    r = client.post(path, json={"url": "https://unreachable.example"})
+    assert r.status_code == 502
+    assert r.json()["error"] == "Could not fetch that URL."

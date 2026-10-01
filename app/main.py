@@ -28,6 +28,7 @@ from app.database import (
     REPORT_RETENTION_DAYS,
 )
 from app.analyzer import get_engine_list, shutdown_analyzer, _max_full, _max_snippet
+from app.engine_status import get_health_summary, mark_failed, mark_loaded
 from app.queue_manager import QueueManager
 
 from app.routes.web import router as web_router
@@ -151,8 +152,10 @@ def _preload_models():
             try:
                 mod = importlib.import_module(module_path)
                 getattr(mod, func_name)()
+                mark_loaded(module_path.rsplit(".", 1)[1])
                 log.info(f"Preloaded {name}")
             except Exception as e:
+                mark_failed(module_path.rsplit(".", 1)[1], e)
                 log.warning(f"{name} preload failed: {e}")
 
         log.info("Model preloading complete — 23 engines ready")
@@ -171,7 +174,10 @@ async def health_check():
     resp = {
         "status": "healthy" if db_health["status"] == "healthy" else "degraded",
         "database": db_health,
-        "engines": len(get_engine_list()),
+        "engines": {
+            "total": len(get_engine_list()),
+            **get_health_summary(),
+        },
     }
     if app.state.queue_manager:
         resp["queue"] = app.state.queue_manager.queue_status()
